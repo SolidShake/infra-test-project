@@ -1,0 +1,103 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8081:8080"
+    networks:
+      - elk-net
+      - monitoring-net
+    depends_on:
+      - prometheus
+    labels:
+      logsource: "app"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.3
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    networks:
+      - elk-net
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:7.17.3
+    volumes:
+      - ./logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+    ports:
+      - "5044:5044"
+    networks:
+      - elk-net
+    depends_on:
+      - elasticsearch
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.17.3
+    ports:
+      - "5601:5601"
+    networks:
+      - elk-net
+    depends_on:
+      - elasticsearch
+
+  prometheus:
+    image: prom/prometheus:v2.41.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring-net
+
+  grafana:
+    image: grafana/grafana:9.3.2
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards/custom
+    networks:
+      - monitoring-net
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:7.17.3
+    user: root
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+    networks:
+      - elk-net
+    depends_on:
+      - logstash
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+  
+  kibana-init:
+    image: curlimages/curl:latest
+    depends_on:
+      - kibana
+      - elasticsearch
+    command: >
+      sh -c "echo 'Waiting for Kibana to start...' &&
+      while ! curl -s http://kibana:5601; do sleep 5; done &&
+      echo 'Creating Kibana index pattern...' &&
+      curl -X POST 'http://kibana:5601/api/saved_objects/index-pattern/logs-*' -H 'kbn-xsrf: true' -H 'Content-Type: application/json' -d '{\"attributes\":{\"title\":\"logs-*\",\"timeFieldName\":\"@timestamp\"}}' &&
+      echo 'Index pattern created!'"
+    networks:
+      - elk-net
+
+networks:
+  elk-net:
+  monitoring-net:
